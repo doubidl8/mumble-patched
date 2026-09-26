@@ -894,12 +894,27 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 					"<td bgcolor='%1' width='26'><div align='center'><font color='#ffffff' size='3'><b>%2</b></font></div></td>"
 					"</tr></table></td>").arg(dshAvatarColor).arg(dshInitial.toHtmlEscaped());
 				const QString dshEmptyCell = QString::fromLatin1("<td width='34'>&nbsp;</td>");
-				const QString dshBubbleCell = QString::fromLatin1("<td bgcolor='%1'><div style='margin:6px;'><font color='%2'>%3</font></div></td>")
-					.arg(dshBubbleBg).arg(dshBubbleFg).arg(dshBody);
+
+				// 气泡宽度自适应：短消息小气泡，长消息限到视图宽度的 62%（原先固定 100% 会铺满整行）。
+				const QString dshPlainBody = QTextDocumentFragment::fromHtml(dshBody).toPlainText();
+				const int dshViewW = (Global::get().mw && Global::get().mw->qteLog)
+					? Global::get().mw->qteLog->viewport()->width() : 640;
+				const int dshMaxW = qMax(180, static_cast< int >(dshViewW * 0.62));
+				int dshTextW = 24;
+				for (const QString &dshLine : dshPlainBody.split(QLatin1Char('
+'))) {
+					dshTextW = qMax(dshTextW, QFontMetrics(tlog->font()).horizontalAdvance(dshLine));
+				}
+				const int dshBubbleW = qBound(90, dshTextW + 18, dshMaxW);
+				const QString dshBubbleCell =
+					QString::fromLatin1("<td width='%1' bgcolor='%2'><div style='margin:6px;'><font color='%3'>%4</font></div></td>")
+						.arg(QString::number(dshBubbleW)).arg(dshBubbleBg).arg(dshBubbleFg).arg(dshBody);
 				const QString dshRow = ownMessage
 					? QString::fromLatin1("<tr>%1%2%3</tr>").arg(dshEmptyCell).arg(dshBubbleCell).arg(dshAvatarHtml)
 					: QString::fromLatin1("<tr>%1%2%3</tr>").arg(dshAvatarHtml).arg(dshBubbleCell).arg(dshEmptyCell);
-				const QString dshTable = QString::fromLatin1("<table width='100%' cellpadding='0' cellspacing='0'>%1</table>").arg(dshRow);
+				// 表格本身按内容收缩，再靠 align 决定整块贴左还是贴右 —— 这才是气泡的左右对齐。
+				const QString dshTable = QString::fromLatin1("<table cellpadding='0' cellspacing='0' align='%1'>%2</table>")
+					.arg(ownMessage ? QString::fromLatin1("right") : QString::fromLatin1("left")).arg(dshRow);
 
 				tc.insertHtml(dshTable);
 				tc.movePosition(QTextCursor::End);
