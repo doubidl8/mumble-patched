@@ -855,7 +855,59 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 			dt.time().toString(QLatin1String(Global::get().s.bLog24HourClock ? "HH:mm:ss" : "hh:mm:ss AP"));
 		tc.insertHtml(Log::msgColor(QString::fromLatin1("[%1] ").arg(timeString.toHtmlEscaped()), Log::Time));
 
-		validHtml(console, &tc);
+		// ==== dsh patch 2：聊天消息气泡面板（M2）====
+		// 目标：把「[时间] 用户: 内容」的纯文本日志，改成聊天软件的左右气泡布局。
+		//   · 自己发的（ownMessage）→ 右对齐、蓝底气泡 + 右侧头像
+		//   · 别人发的 → 左对齐、深灰气泡 + 左侧头像（颜色由用户名哈希决定，稳定可辨）
+		//   · 系统消息（无 log-user 链接）保持原有的居中/彩色日志样式
+		// 头像列在两侧都保留（空的一侧留白），这样气泡在视觉上始终对齐同一个内边距。
+		{
+			static const QRegularExpression dshUserRe(
+				QString::fromLatin1("<a href='clientid://[^']*' class='log-user[^']*'>(.+?)</a>"));
+			const QRegularExpressionMatch dshUserMatch = dshUserRe.match(console);
+
+			if (dshUserMatch.hasMatch()) {
+				const QString dshSender = dshUserMatch.captured(1);
+
+				// 消息正文 = 发送者链接之后的部分
+				QString dshBody = console.mid(dshUserMatch.capturedEnd(0)).trimmed();
+				if (dshBody.startsWith(QLatin1String(":"))) {
+					dshBody = dshBody.mid(1).trimmed();
+				} else if (dshBody.startsWith(QLatin1String("·"))) {
+					dshBody = dshBody.mid(1).trimmed();
+				}
+
+				// 头像首字 + 稳定配色
+				const QString dshPlainName = QTextDocumentFragment::fromHtml(dshSender).toPlainText().trimmed();
+				const QString dshInitial   = dshPlainName.isEmpty() ? QString::fromLatin1("?") : dshPlainName.left(1).toUpper();
+				const unsigned int dshHash = qHash(dshPlainName);
+				static const char *dshAvatarColors[] = { "#4a90d9", "#d08770", "#a3be8c", "#b48ead",
+													 "#ebcb8b", "#5e81ac", "#bf616a", "#88c0d0" };
+				const QString dshAvatarColor =
+					QString::fromLatin1(dshAvatarColors[dshHash % (sizeof(dshAvatarColors) / sizeof(dshAvatarColors[0]))]);
+
+				const QString dshBubbleBg   = ownMessage ? QString::fromLatin1("#3d7ebf") : QString::fromLatin1("#2b2b2b");
+				const QString dshBubbleFg   = ownMessage ? QString::fromLatin1("#ffffff") : QString::fromLatin1("#e6e6e6");
+				const QString dshAvatarHtml = QString::fromLatin1(
+					"<td width='34' valign='top' align='center'>"
+					"<table cellpadding='6' cellspacing='0'><tr>"
+					"<td bgcolor='%1' width='26'><div align='center'><font color='#ffffff' size='3'><b>%2</b></font></div></td>"
+					"</tr></table></td>").arg(dshAvatarColor).arg(dshInitial.toHtmlEscaped());
+				const QString dshEmptyCell = QString::fromLatin1("<td width='34'>&nbsp;</td>");
+				const QString dshBubbleCell = QString::fromLatin1("<td bgcolor='%1'><div style='margin:6px;'><font color='%2'>%3</font></div></td>")
+					.arg(dshBubbleBg).arg(dshBubbleFg).arg(dshBody);
+				const QString dshRow = ownMessage
+					? QString::fromLatin1("<tr>%1%2%3</tr>").arg(dshEmptyCell).arg(dshBubbleCell).arg(dshAvatarHtml)
+					: QString::fromLatin1("<tr>%1%2%3</tr>").arg(dshAvatarHtml).arg(dshBubbleCell).arg(dshEmptyCell);
+				const QString dshTable = QString::fromLatin1("<table width='100%' cellpadding='0' cellspacing='0'>%1</table>").arg(dshRow);
+
+				tc.insertHtml(dshTable);
+				tc.movePosition(QTextCursor::End);
+				tc.setBlockFormat(bf);
+			} else {
+				validHtml(console, &tc);
+			}
+		}
 		tc.movePosition(QTextCursor::End);
 		Global::get().mw->qteLog->setTextCursor(tc);
 
