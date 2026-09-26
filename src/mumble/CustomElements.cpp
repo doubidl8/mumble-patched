@@ -13,10 +13,14 @@
 #include "Global.h"
 
 #include <QMimeData>
+#include <QtCore/QCoreApplication>
 #include <QtCore/QTimer>
 #include <QtGui/QAbstractTextDocumentLayout>
 #include <QtGui/QClipboard>
 #include <QtGui/QContextMenuEvent>
+#include <QtGui/QDragEnterEvent>
+#include <QtGui/QDragMoveEvent>
+#include <QtGui/QDropEvent>
 #include <QtGui/QKeyEvent>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -42,6 +46,43 @@ void LogTextBrowser::setLogScroll(int scroll_pos) {
 bool LogTextBrowser::isScrolledToBottom() {
 	const QScrollBar *scrollBar = verticalScrollBar();
 	return scrollBar->value() == scrollBar->maximum();
+}
+
+// dsh patch：聊天记录区（qteLog）的拖放转发。
+// 问题：以前只有底部输入栏 ChatbarTextEdit 接了 dropEvent。聊天记录区是只读 QTextBrowser，
+// Qt 收到 drop 后不会插入内容、也不会往上传，表现为「把文件拖到聊天区毫无反应」。
+// 现在统一转交给输入栏的发送逻辑（图片内嵌 / 其它文件传图床再发链接）。
+namespace {
+ChatbarTextEdit *dshChatbarTextEdit() {
+	MainWindow *mw = Global::get().mw;
+	return mw ? mw->qteChat : nullptr;
+}
+} // namespace
+
+void LogTextBrowser::dragEnterEvent(QDragEnterEvent *evt) {
+	if (ChatbarTextEdit::dshMimeHasLocalFile(evt->mimeData())) {
+		evt->acceptProposedAction();
+		return;
+	}
+	QTextBrowser::dragEnterEvent(evt);
+}
+
+void LogTextBrowser::dragMoveEvent(QDragMoveEvent *evt) {
+	if (ChatbarTextEdit::dshMimeHasLocalFile(evt->mimeData())) {
+		evt->acceptProposedAction();
+		return;
+	}
+	QTextBrowser::dragMoveEvent(evt);
+}
+
+void LogTextBrowser::dropEvent(QDropEvent *evt) {
+	ChatbarTextEdit *chat = dshChatbarTextEdit();
+	if (chat && ChatbarTextEdit::dshMimeHasLocalFile(evt->mimeData())
+		&& chat->dshHandleDroppedMimeData(evt->mimeData())) {
+		evt->acceptProposedAction();
+		return;
+	}
+	QTextBrowser::dropEvent(evt);
 }
 
 
@@ -104,7 +145,7 @@ void ChatbarTextEdit::dragMoveEvent(QDragMoveEvent *evt) {
 
 void ChatbarTextEdit::dropEvent(QDropEvent *evt) {
 	inFocus(true);
-	if (sendImagesFromMimeData(evt->mimeData())) {
+	if (dshMimeHasLocalFile(evt->mimeData()) && sendImagesFromMimeData(evt->mimeData())) {
 		evt->acceptProposedAction();
 	} else {
 		QTextEdit::dropEvent(evt);
@@ -205,20 +246,42 @@ QString dshShareConfigPath() {
 	return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QLatin1String("/mumble-share.json");
 }
 
+// dsh patch：配置位置宽容一点。有人会放到上一级（%APPDATA%\Mumble\ 而不是 %APPDATA%\Mumble\Mumble\），
+// 或者直接丢在客户端 exe 旁边。这两个位置以前都会「功能静默不生效」，多找两处少一类坑。
+QStringList dshShareConfigCandidates() {
+	QStringList paths = QStringList(dshShareConfigPath());
+	const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+	paths << appData + QLatin1String("/mumble-share.json");
+	const int slash = appData.lastIndexOf(QLatin1Char('/'));
+	if (slash > 0) {
+		paths << appData.left(slash) + QLatin1String("/mumble-share.json");
+	}
+	paths << QCoreApplication::applicationDirPath() + QLatin1String("/mumble-share.json");
+	paths.removeDuplicates();
+	return paths;
+}
+
 DshShareConfig dshShareConfig() {
 	DshShareConfig cfg;
 	cfg.url   = QString::fromLocal8Bit(qgetenv("MUMBLE_SHARE_URL"));
 	cfg.token = QString::fromLocal8Bit(qgetenv("MUMBLE_SHARE_TOKEN"));
 
 	if (cfg.url.isEmpty() || cfg.token.isEmpty()) {
-		QFile f(dshShareConfigPath());
-		if (f.open(QIODevice::ReadOnly)) {
+		const QStringList candidates = dshShareConfigCandidates();
+		for (const QString &candidate : candidates) {
+			QFile f(candidate);
+			if (!f.open(QIODevice::ReadOnly)) {
+				continue;
+			}
 			const QJsonObject obj = QJsonDocument::fromJson(f.readAll()).object();
 			if (cfg.url.isEmpty()) {
 				cfg.url = obj.value(QLatin1String("url")).toString();
 			}
 			if (cfg.token.isEmpty()) {
 				cfg.token = obj.value(QLatin1String("token")).toString();
+			}
+			if (cfg.valid()) {
+				break;
 			}
 		}
 	}
@@ -235,9 +298,9 @@ bool ChatbarTextEdit::dshSendDroppedFile(const QString &path) {
 	const DshShareConfig cfg = dshShareConfig();
 	if (!cfg.valid()) {
 		Global::get().l->log(Log::Warning,
-							 tr("No upload service configured - create \"%1\" with {\"url\": ..., \"token\": ...} "
-								"to send files by dropping them here.")
-								 .arg(dshShareConfigPath()));
+							 tr("No upload service configured - create one of these files with "
+								"{\"url\": ..., \"token\": ...} to send files by dropping them here:<br />%1")
+								 .arg(dshShareConfigCandidates().join(QLatin1String("<br />"))));
 		return false;
 	}
 	if (!Global::get().nam) {
@@ -287,6 +350,23 @@ bool ChatbarTextEdit::dshSendDroppedFile(const QString &path) {
 	return true;
 }
 
+bool ChatbarTextEdit::dshMimeHasLocalFile(const QMimeData *source) {
+	if (!source || !source->hasUrls()) {
+		return false;
+	}
+	const QList< QUrl > urls = source->urls();
+	for (const QUrl &url : urls) {
+		if (url.isLocalFile()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ChatbarTextEdit::dshHandleDroppedMimeData(const QMimeData *source) {
+	return sendImagesFromMimeData(source);
+}
+
 bool ChatbarTextEdit::sendImagesFromMimeData(const QMimeData *source) {
 	// dsh patch：除了图片内嵌，还把「非图片文件」和「内嵌失败的图片」交给图床上传（见 dshSendDroppedFile）
 	if (source->hasImage() && Global::get().bAllowHTML) {
@@ -305,6 +385,9 @@ bool ChatbarTextEdit::sendImagesFromMimeData(const QMimeData *source) {
 
 	// Process the files dropped onto the chatbar. URLs here should be understood as the URIs of files.
 	const QList< QUrl > urlList = source->urls();
+	// dsh patch：拖放必须在聊天区留痕，否则「没反应」时无法判断事件到底有没有进来
+	Global::get().l->log(Log::Information,
+						 tr("Received %1 dropped path(s) - sending...").arg(urlList.count()));
 	int count                   = 0;
 	for (const QUrl &url : urlList) {
 		const QString path = url.toLocalFile();
@@ -326,8 +409,15 @@ bool ChatbarTextEdit::sendImagesFromMimeData(const QMimeData *source) {
 		}
 	}
 
-	if (count == 0 && !Global::get().bAllowHTML) {
-		Global::get().l->log(Log::Information, tr("This server does not allow sending images."));
+	if ((count == 0) && dshMimeHasLocalFile(source)) {
+		if (!Global::get().bAllowHTML) {
+			Global::get().l->log(Log::Information, tr("This server does not allow sending images."));
+		} else {
+			Global::get().l->log(Log::Warning,
+								 tr("Nothing was sent for this drop (%1 path(s)) - the file may be unreadable, or "
+									"the upload service is not configured.")
+									 .arg(urlList.count()));
+		}
 	}
 	return count > 0;
 }

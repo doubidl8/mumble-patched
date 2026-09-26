@@ -53,10 +53,13 @@ private:
 	void updateHint();
 
 	QImage m_source;
-	/// 让图片至少覆盖裁剪框的最小缩放（相对原图）
+	/// 让图片刚好铺满裁剪框的缩放（相对原图）= 滑条 100% 的基准
 	qreal m_baseZoom = 1.0;
-	/// 用户额外放大的倍数（1.0 - 4.0）
+	/// 用户相对基准的缩放倍数；下限 m_minFactor，上限 4.0
 	qreal m_zoomFactor = 1.0;
+	/// 缩放倍数下限 = 「整图刚好放进裁剪框」/「铺满裁剪框」（0 < 值 <= 1）。
+	/// 旧版把下限写死为 1.0（= 只能放大不能缩小），大头照永远框不住整颗头。
+	qreal m_minFactor = 1.0;
 	/// 图片中心相对裁剪框中心的偏移（组件像素）
 	QPointF m_offset;
 	QPointF m_dragOrigin;

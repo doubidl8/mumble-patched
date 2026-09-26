@@ -70,10 +70,14 @@
 #endif
 
 #include <QAccessible>
+#include <QtCore/QMimeData>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QUrlQuery>
 #include <QtGui/QClipboard>
 #include <QtGui/QDesktopServices>
+#include <QtGui/QDragEnterEvent>
+#include <QtGui/QDragMoveEvent>
+#include <QtGui/QDropEvent>
 #include <QtGui/QImageReader>
 #include <QtGui/QImageWriter>
 #include <QtGui/QScreen>
@@ -466,6 +470,33 @@ void MainWindow::createActions() {
 	gsAdaptivePush->qsToolTip = tr("When using the push-to-talk transmission mode, this will act as the push-to-talk "
 								   "action. Otherwise, it will act as a push-to-mute action.",
 								   "Global Shortcut");
+}
+
+// dsh patch：窗口级拖放兜底。子控件（聊天输入栏 / 聊天记录区）先接；
+// 落到窗口空白处（用户树、标题区等）时也走同一套发送逻辑。
+void MainWindow::dragEnterEvent(QDragEnterEvent *e) {
+	if (qteChat && ChatbarTextEdit::dshMimeHasLocalFile(e->mimeData())) {
+		e->acceptProposedAction();
+		return;
+	}
+	QMainWindow::dragEnterEvent(e);
+}
+
+void MainWindow::dragMoveEvent(QDragMoveEvent *e) {
+	if (qteChat && ChatbarTextEdit::dshMimeHasLocalFile(e->mimeData())) {
+		e->acceptProposedAction();
+		return;
+	}
+	QMainWindow::dragMoveEvent(e);
+}
+
+void MainWindow::dropEvent(QDropEvent *e) {
+	if (qteChat && ChatbarTextEdit::dshMimeHasLocalFile(e->mimeData())
+		&& qteChat->dshHandleDroppedMimeData(e->mimeData())) {
+		e->acceptProposedAction();
+		return;
+	}
+	QMainWindow::dropEvent(e);
 }
 
 void MainWindow::setupGui() {

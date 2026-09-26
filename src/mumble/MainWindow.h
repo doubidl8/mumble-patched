@@ -226,6 +226,10 @@ protected:
 	void showEvent(QShowEvent *e) Q_DECL_OVERRIDE;
 	void changeEvent(QEvent *e) Q_DECL_OVERRIDE;
 	void keyPressEvent(QKeyEvent *e) Q_DECL_OVERRIDE;
+	// dsh patch：主窗口也接拖放兜底（拖到聊天区以外的位置时，别再「什么都没发生」）
+	void dragEnterEvent(QDragEnterEvent *e) Q_DECL_OVERRIDE;
+	void dragMoveEvent(QDragMoveEvent *e) Q_DECL_OVERRIDE;
+	void dropEvent(QDropEvent *e) Q_DECL_OVERRIDE;
 
 	QMenu *createPopupMenu() Q_DECL_OVERRIDE;
 
