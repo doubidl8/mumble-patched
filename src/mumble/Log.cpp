@@ -667,7 +667,7 @@ QString Log::validHtml(const QString &html, QTextCursor *tc) {
 			dshTargetWidth = Global::get().mw->qteLog->viewport()->width() - 32;
 		}
 		if (dshTargetWidth <= 0) {
-			dshTargetWidth = qr.width() / 2 - 32;
+			dshTargetWidth = static_cast< int >(qr.width()) / 2 - 32;
 		}
 		if (dshTargetWidth > 0) {
 			for (QTextBlock qtb = qtd.begin(); qtb != qtd.end(); qtb = qtb.next()) {
@@ -902,8 +902,7 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 					? Global::get().mw->qteLog->viewport()->width() : 640;
 				const int dshMaxW = qMax(180, static_cast< int >(dshViewW * 0.62));
 				int dshTextW = 24;
-				for (const QString &dshLine : dshPlainBody.split(QLatin1Char('
-'))) {
+				for (const QString &dshLine : dshPlainBody.split(QLatin1Char(10))) {
 					dshTextW = qMax(dshTextW, QFontMetrics(tlog->font()).horizontalAdvance(dshLine));
 				}
 				const int dshBubbleW = qBound(90, dshTextW + 18, dshMaxW);
