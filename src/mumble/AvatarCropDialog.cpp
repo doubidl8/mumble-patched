@@ -81,8 +81,11 @@ void AvatarCropDialog::updateBaseZoom() {
 		contain = qMin(static_cast< qreal >(crop.width()) / m_source.width(),
 					   static_cast< qreal >(crop.height()) / m_source.height());
 	}
-	// 100% = 刚好铺满裁剪框（构图最紧凑）
-	m_baseZoom = qMax(1.0, cover);
+	// 100% = 刚好铺满裁剪框（构图最紧凑）。
+	// 注意：这里**不能**写成 qMax(1.0, cover)。旧版就是那么写的，等于把「100%」定义成
+	// 「按原图像素 1:1 显示」——大图（例如 1600x1200 放进 353px 的裁剪框，cover≈0.29）
+	// 的基准被抬到 1.0，滑条就算缩到下限，图仍然比裁剪框大 2.5 倍，整颗头照样框不住。
+	m_baseZoom = (cover > 0.0) ? cover : 1.0;
 
 	// 相对基准能缩到的最小倍数：缩到这里整张图刚好装进裁剪框（露出底色，但能框住整颗头）。
 	m_minFactor = 1.0;
