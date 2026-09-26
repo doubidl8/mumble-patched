@@ -10,6 +10,8 @@
 #include "AudioOutputSample.h"
 #include "AudioOutputToken.h"
 #include "Channel.h"
+#include "ClientUser.h"
+#include "Database.h"
 #include "MainWindow.h"
 #include "NetworkConfig.h"
 #include "RichTextEditor.h"
@@ -764,6 +766,78 @@ QString Log::validHtml(const QString &html, QTextCursor *tc) {
 	}
 }
 
+
+namespace {
+// dsh patch：从聊天 HTML 里的 clientid 链接解析出发言人，用来取「真实头像」
+ClientUser *dshUserFromConsole(const QString &console) {
+	static const QRegularExpression dshSessionRe(QString::fromLatin1("clientid://id\\.(\\d+)/"));
+	const QRegularExpressionMatch dshSessionMatch = dshSessionRe.match(console);
+	if (dshSessionMatch.hasMatch()) {
+		bool dshOk         = false;
+		const uint dshSess = dshSessionMatch.captured(1).toUInt(&dshOk);
+		if (dshOk) {
+			return ClientUser::get(dshSess);
+		}
+	}
+	// 已注册用户用的是 clientid://<hash> 形式，按 hash 在在线用户里找
+	static const QRegularExpression dshHashRe(QString::fromLatin1("clientid://([A-Za-z0-9+/=_\\-]{16,})"));
+	const QRegularExpressionMatch dshHashMatch = dshHashRe.match(console);
+	if (dshHashMatch.hasMatch()) {
+		const QString dshHash = dshHashMatch.captured(1);
+		QReadLocker dshLock(&ClientUser::c_qrwlUsers);
+		for (ClientUser *dshUser : ClientUser::c_qmUsers) {
+			if (dshUser && dshUser->qsHash == dshHash) {
+				return dshUser;
+			}
+		}
+	}
+	return nullptr;
+}
+
+// dsh patch：把用户头像编码成可内嵌富文本的 data URI；没设置头像就返回空串，调用方退回「首字色块」
+QString dshAvatarImageSrc(ClientUser *user) {
+	if (!user) {
+		return QString();
+	}
+
+	QByteArray dshTexture = user->qbaTexture;
+	if (dshTexture.isEmpty() && !user->qbaTextureHash.isEmpty() && Global::get().db) {
+		dshTexture = Global::get().db->blob(user->qbaTextureHash);
+	}
+	if (dshTexture.isEmpty()) {
+		return QString();
+	}
+
+	static QHash< QByteArray, QString > dshAvatarCache;
+	const QByteArray dshKey = user->qbaTextureHash.isEmpty() ? dshTexture : user->qbaTextureHash;
+	const auto dshCached    = dshAvatarCache.constFind(dshKey);
+	if (dshCached != dshAvatarCache.constEnd()) {
+		return dshCached.value();
+	}
+
+	QString dshResult;
+	QImage dshImage;
+	if (dshImage.loadFromData(dshTexture)) {
+		constexpr int dshSide = 64;
+		QImage dshSquare =
+			dshImage.scaled(dshSide, dshSide, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+		dshSquare = dshSquare.copy((dshSquare.width() - dshSide) / 2, (dshSquare.height() - dshSide) / 2, dshSide, dshSide);
+		QByteArray dshPng;
+		QBuffer dshBuffer(&dshPng);
+		dshBuffer.open(QIODevice::WriteOnly);
+		if (dshSquare.save(&dshBuffer, "PNG")) {
+			dshResult = QString::fromLatin1("data:image/png;base64,%1").arg(QString::fromLatin1(dshPng.toBase64()));
+		}
+	}
+
+	if (dshAvatarCache.size() > 64) {
+		dshAvatarCache.clear();
+	}
+	dshAvatarCache.insert(dshKey, dshResult);
+	return dshResult;
+}
+} // namespace
+
 void Log::log(MsgType mt, const QString &console, const QString &terse, bool ownMessage, const QString &overrideTTS,
 			  bool ignoreTTS) {
 	if (QThread::currentThread() != thread()) {
@@ -857,51 +931,86 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 
 		// ==== dsh patch 2：聊天消息气泡面板（M2）====
 		// 目标：把「[时间] 用户: 内容」的纯文本日志，改成聊天软件的左右气泡布局。
-		//   · 自己发的（ownMessage）→ 右对齐、蓝底气泡 + 右侧头像
-		//   · 别人发的 → 左对齐、深灰气泡 + 左侧头像（颜色由用户名哈希决定，稳定可辨）
-		//   · 系统消息（无 log-user 链接）保持原有的居中/彩色日志样式
-		// 头像列在两侧都保留（空的一侧留白），这样气泡在视觉上始终对齐同一个内边距。
+		//   · 别人发的 → 左对齐、深灰气泡 + 左侧头像（优先用对方设置的真实头像）
+		//   · 自己发的 → 右对齐、蓝底气泡 + 右侧头像
+		//   · 系统消息（没有发送者链接）保持原有的居中/彩色日志样式
+		// 坑：自己发消息时 console 是 tr("To %1: %2")，%1 是「目标」链接，而且前缀文字会被翻译
+		// （中文界面显示成「至 Root」），所以不能用字面量 "To " 去匹配，只能按第一个 </a> 切分正文。
 		{
-			static const QRegularExpression dshUserRe(
-				QString::fromLatin1("<a href='clientid://[^']*' class='log-user[^']*'>(.+?)</a>"));
-			const QRegularExpressionMatch dshUserMatch = dshUserRe.match(console);
+			QString dshSender;
+			QString dshBody;
+			ClientUser *dshSenderUser = nullptr;
+			bool dshIsBubble          = false;
 
-			if (dshUserMatch.hasMatch()) {
-				const QString dshSender = dshUserMatch.captured(1);
+			if (ownMessage) {
+				const int dshClose = console.indexOf(QLatin1String("</a>"));
+				if (dshClose >= 0) {
+					QString dshRest = console.mid(dshClose + 4).trimmed();
+					while (!dshRest.isEmpty()
+						   && (dshRest.startsWith(QLatin1Char(':')) || dshRest.startsWith(QString::fromUtf8("：")))) {
+						dshRest = dshRest.mid(1).trimmed();
+					}
+					if (!dshRest.isEmpty()) {
+						dshSenderUser = ClientUser::get(Global::get().uiSession);
+						dshSender     = dshSenderUser ? dshSenderUser->qsName : QString::fromLatin1("me");
+						dshBody       = dshRest;
+						dshIsBubble   = true;
+					}
+				}
+			} else {
+				static const QRegularExpression dshUserRe(
+					QString::fromLatin1("<a href='clientid://[^']*' class='log-user[^']*'>(.+?)</a>"));
+				const QRegularExpressionMatch dshUserMatch = dshUserRe.match(console);
+				if (dshUserMatch.hasMatch()) {
+					dshSender     = dshUserMatch.captured(1);
+					dshSenderUser = dshUserFromConsole(console);
+					dshBody       = console.mid(dshUserMatch.capturedEnd(0)).trimmed();
+					if (dshBody.startsWith(QLatin1String(":")) || dshBody.startsWith(QString::fromUtf8("："))) {
+						dshBody = dshBody.mid(1).trimmed();
+					} else if (dshBody.startsWith(QString::fromUtf8("·"))) {
+						dshBody = dshBody.mid(1).trimmed();
+					}
+					dshIsBubble = true;
+				}
+			}
 
-				// 消息正文 = 发送者链接之后的部分
-				QString dshBody = console.mid(dshUserMatch.capturedEnd(0)).trimmed();
-				if (dshBody.startsWith(QLatin1String(":"))) {
-					dshBody = dshBody.mid(1).trimmed();
-				} else if (dshBody.startsWith(QLatin1String("·"))) {
-					dshBody = dshBody.mid(1).trimmed();
+			if (dshIsBubble) {
+				const QString dshPlainName = QTextDocumentFragment::fromHtml(dshSender).toPlainText().trimmed();
+				const QString dshAvatarSrc = dshAvatarImageSrc(dshSenderUser);
+				QString dshAvatarHtml;
+				if (!dshAvatarSrc.isEmpty()) {
+					// 对方（或自己）在 Mumble 里设置的真实头像
+					dshAvatarHtml =
+						QString::fromLatin1("<td width='34' valign='top' align='center'>"
+											"<img src=\"%1\" width='26' height='26' /></td>")
+							.arg(dshAvatarSrc);
+				} else {
+					// 没设置头像 → 退回「首字 + 稳定配色」
+					const QString dshInitial =
+						dshPlainName.isEmpty() ? QString::fromLatin1("?") : dshPlainName.left(1).toUpper();
+					const size_t dshHash = static_cast< size_t >(qHash(dshPlainName));
+					static const char *dshAvatarColors[] = { "#4a90d9", "#d08770", "#a3be8c", "#b48ead",
+															 "#ebcb8b", "#5e81ac", "#bf616a", "#88c0d0" };
+					const QString dshAvatarColor = QString::fromLatin1(
+						dshAvatarColors[dshHash % (sizeof(dshAvatarColors) / sizeof(dshAvatarColors[0]))]);
+					dshAvatarHtml = QString::fromLatin1(
+						"<td width='34' valign='top' align='center'>"
+						"<table cellpadding='6' cellspacing='0'><tr>"
+						"<td bgcolor='%1' width='26'><div align='center'><font color='#ffffff' size='3'><b>%2</b></font></div></td>"
+						"</tr></table></td>").arg(dshAvatarColor).arg(dshInitial.toHtmlEscaped());
 				}
 
-				// 头像首字 + 稳定配色
-				const QString dshPlainName = QTextDocumentFragment::fromHtml(dshSender).toPlainText().trimmed();
-				const QString dshInitial   = dshPlainName.isEmpty() ? QString::fromLatin1("?") : dshPlainName.left(1).toUpper();
-				const size_t dshHash = static_cast< size_t >(qHash(dshPlainName));
-				static const char *dshAvatarColors[] = { "#4a90d9", "#d08770", "#a3be8c", "#b48ead",
-													 "#ebcb8b", "#5e81ac", "#bf616a", "#88c0d0" };
-				const QString dshAvatarColor =
-					QString::fromLatin1(dshAvatarColors[dshHash % (sizeof(dshAvatarColors) / sizeof(dshAvatarColors[0]))]);
-
-				const QString dshBubbleBg   = ownMessage ? QString::fromLatin1("#3d7ebf") : QString::fromLatin1("#2b2b2b");
-				const QString dshBubbleFg   = ownMessage ? QString::fromLatin1("#ffffff") : QString::fromLatin1("#e6e6e6");
-				const QString dshAvatarHtml = QString::fromLatin1(
-					"<td width='34' valign='top' align='center'>"
-					"<table cellpadding='6' cellspacing='0'><tr>"
-					"<td bgcolor='%1' width='26'><div align='center'><font color='#ffffff' size='3'><b>%2</b></font></div></td>"
-					"</tr></table></td>").arg(dshAvatarColor).arg(dshInitial.toHtmlEscaped());
+				const QString dshBubbleBg  = ownMessage ? QString::fromLatin1("#3d7ebf") : QString::fromLatin1("#2b2b2b");
+				const QString dshBubbleFg  = ownMessage ? QString::fromLatin1("#ffffff") : QString::fromLatin1("#e6e6e6");
 				const QString dshEmptyCell = QString::fromLatin1("<td width='34'>&nbsp;</td>");
 
 				// 气泡宽度自适应：短消息小气泡，长消息限到视图宽度的 62%（原先固定 100% 会铺满整行）。
 				const QString dshPlainBody = QTextDocumentFragment::fromHtml(dshBody).toPlainText();
-				const QString dshPlainNameMeasure = QTextDocumentFragment::fromHtml(dshSender).toPlainText().trimmed();
 				const int dshViewW = (Global::get().mw && Global::get().mw->qteLog)
-					? Global::get().mw->qteLog->viewport()->width() : 640;
-				const int dshMaxW = qMax(180, static_cast< int >(dshViewW * 0.62));
-				int dshTextW = 24;
+										 ? Global::get().mw->qteLog->viewport()->width()
+										 : 640;
+				const int dshMaxW  = qMax(180, static_cast< int >(dshViewW * 0.62));
+				int dshTextW       = 24;
 				for (const QString &dshLine : dshPlainBody.split(QLatin1Char(10))) {
 					dshTextW = qMax(dshTextW, QFontMetrics(tlog->font()).horizontalAdvance(dshLine));
 				}
@@ -909,21 +1018,33 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 				// 气泡内首行显示发送者名字（聊天软件标配），正文另起一行
 				const QString dshBubbleContent = QString::fromLatin1(
 					"<div style='margin-bottom:3px;'><font color='%1' size='1'><b>%2</b></font></div>%3")
-					.arg(ownMessage ? QString::fromLatin1("#dbe9ff") : QString::fromLatin1("#9fd0ff"))
-					.arg(dshPlainNameMeasure.toHtmlEscaped())
-					.arg(dshBody);
+													  .arg(ownMessage ? QString::fromLatin1("#dbe9ff")
+																	  : QString::fromLatin1("#9fd0ff"))
+													  .arg(dshPlainName.toHtmlEscaped())
+													  .arg(dshBody);
 				const QString dshBubbleCell =
 					QString::fromLatin1("<td width='%1' bgcolor='%2'><div style='margin:6px;'><font color='%3'>%4</font></div></td>")
-						.arg(QString::number(dshBubbleW)).arg(dshBubbleBg).arg(dshBubbleFg).arg(dshBubbleContent);
-				const QString dshRow = ownMessage
-					? QString::fromLatin1("<tr>%1%2%3</tr>").arg(dshEmptyCell).arg(dshBubbleCell).arg(dshAvatarHtml)
-					: QString::fromLatin1("<tr>%1%2%3</tr>").arg(dshAvatarHtml).arg(dshBubbleCell).arg(dshEmptyCell);
+						.arg(QString::number(dshBubbleW))
+						.arg(dshBubbleBg)
+						.arg(dshBubbleFg)
+						.arg(dshBubbleContent);
+				const QString dshRow =
+					ownMessage
+						? QString::fromLatin1("<tr>%1%2%3</tr>").arg(dshEmptyCell).arg(dshBubbleCell).arg(dshAvatarHtml)
+						: QString::fromLatin1("<tr>%1%2%3</tr>").arg(dshAvatarHtml).arg(dshBubbleCell).arg(dshEmptyCell);
 				// 表格本身按内容收缩，再靠 align 决定整块贴左还是贴右 —— 这才是气泡的左右对齐。
 				const QString dshTable = QString::fromLatin1("<table cellpadding='0' cellspacing='0' align='%1'>%2</table>")
-					.arg(ownMessage ? QString::fromLatin1("right") : QString::fromLatin1("left")).arg(dshRow);
+											 .arg(ownMessage ? QString::fromLatin1("right") : QString::fromLatin1("left"))
+											 .arg(dshRow);
 
 				tc.insertHtml(dshTable);
 				tc.movePosition(QTextCursor::End);
+				tc.setBlockFormat(bf);
+			} else {
+				validHtml(console, &tc);
+			}
+		}
+		tc.movePosition(QTextCursor::End);
 				tc.setBlockFormat(bf);
 			} else {
 				validHtml(console, &tc);
