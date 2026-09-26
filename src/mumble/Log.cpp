@@ -1045,12 +1045,6 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 			}
 		}
 		tc.movePosition(QTextCursor::End);
-				tc.setBlockFormat(bf);
-			} else {
-				validHtml(console, &tc);
-			}
-		}
-		tc.movePosition(QTextCursor::End);
 		Global::get().mw->qteLog->setTextCursor(tc);
 
 		// Set the line height of the trailing blank line to zero
