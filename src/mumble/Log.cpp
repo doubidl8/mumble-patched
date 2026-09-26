@@ -897,6 +897,7 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 
 				// 气泡宽度自适应：短消息小气泡，长消息限到视图宽度的 62%（原先固定 100% 会铺满整行）。
 				const QString dshPlainBody = QTextDocumentFragment::fromHtml(dshBody).toPlainText();
+				const QString dshPlainNameMeasure = QTextDocumentFragment::fromHtml(dshSender).toPlainText().trimmed();
 				const int dshViewW = (Global::get().mw && Global::get().mw->qteLog)
 					? Global::get().mw->qteLog->viewport()->width() : 640;
 				const int dshMaxW = qMax(180, static_cast< int >(dshViewW * 0.62));
@@ -906,9 +907,15 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 					dshTextW = qMax(dshTextW, QFontMetrics(tlog->font()).horizontalAdvance(dshLine));
 				}
 				const int dshBubbleW = qBound(90, dshTextW + 18, dshMaxW);
+				// 气泡内首行显示发送者名字（聊天软件标配），正文另起一行
+				const QString dshBubbleContent = QString::fromLatin1(
+					"<div style='margin-bottom:3px;'><font color='%1' size='1'><b>%2</b></font></div>%3")
+					.arg(ownMessage ? QString::fromLatin1("#dbe9ff") : QString::fromLatin1("#9fd0ff"))
+					.arg(dshPlainNameMeasure.toHtmlEscaped())
+					.arg(dshBody);
 				const QString dshBubbleCell =
 					QString::fromLatin1("<td width='%1' bgcolor='%2'><div style='margin:6px;'><font color='%3'>%4</font></div></td>")
-						.arg(QString::number(dshBubbleW)).arg(dshBubbleBg).arg(dshBubbleFg).arg(dshBody);
+						.arg(QString::number(dshBubbleW)).arg(dshBubbleBg).arg(dshBubbleFg).arg(dshBubbleContent);
 				const QString dshRow = ownMessage
 					? QString::fromLatin1("<tr>%1%2%3</tr>").arg(dshEmptyCell).arg(dshBubbleCell).arg(dshAvatarHtml)
 					: QString::fromLatin1("<tr>%1%2%3</tr>").arg(dshAvatarHtml).arg(dshBubbleCell).arg(dshEmptyCell);
