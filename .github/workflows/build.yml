@@ -46,27 +46,19 @@ jobs:
     strategy:
         fail-fast: false
         matrix:
+            # dsh: 只构建 amd64 Windows（用户要求 2026-09-26）。
+            # 说明: exclude 只过滤基础笛卡尔积、不过滤 include —— 所以
+            # 光加 exclude 没用，必须把非 Windows 的 include 条目删掉。
+            # 想临时排查某平台（如 ubuntu 编译错误）就把对应条目加回 include 再推。
             os: [ubuntu-24.04, ubuntu-26.04]
             type: [shared]
             arch: [x86_64, arm64]
             compiler: [gcc]
-            # dsh: 只构建 amd64 Windows（用户要求 2026-09-26）。
-            # Linux/macOS/arm64 仅用于提前发现编译错误，但全平台一轮 25-30 分钟，
-            # 而 Windows 静态 Qt 构建本身就占大头 —— 故排除其余平台。
-            # 需要临时排查某平台时，把对应 exclude 条目注释掉再推。
             exclude:
             - os: ubuntu-24.04
             - os: ubuntu-26.04
             - os: macos-15
             include:
-            - os: ubuntu-26.04
-              type: shared
-              arch: x86_64
-              compiler: gcc-16
-            - os: ubuntu-26.04
-              type: shared
-              arch: x86_64
-              compiler: clang-22
             - os: windows-2025
               type: static
               arch: x86_64
@@ -75,10 +67,7 @@ jobs:
               type: static
               arch: x86_64
               compiler: clang-cl
-            - os: macos-15
-              type: static
-              arch: x86_64
-              compiler: clang
+
 
     runs-on: ${{ matrix.os }}${{ matrix.arch == 'arm64' && '-arm' || '' }}
 
