@@ -53,6 +53,7 @@ protected:
 	void insertFromMimeData(const QMimeData *source) Q_DECL_OVERRIDE;
 	bool sendImagesFromMimeData(const QMimeData *source);
 	bool emitPastedImage(QImage image);
+	bool dshSendDroppedFile(const QString &path);
 
 public:
 	void setDefaultText(const QString &, bool = false);

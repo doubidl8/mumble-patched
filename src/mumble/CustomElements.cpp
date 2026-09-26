@@ -18,6 +18,14 @@
 #include <QtGui/QClipboard>
 #include <QtGui/QContextMenuEvent>
 #include <QtGui/QKeyEvent>
+#include <QtCore/QFile>
+#include <QtCore/QFileInfo>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
+#include <QtCore/QStandardPaths>
+#include <QtNetwork/QNetworkAccessManager>
+#include <QtNetwork/QNetworkReply>
+#include <QtNetwork/QNetworkRequest>
 #include <QtWidgets/QScrollBar>
 
 LogTextBrowser::LogTextBrowser(QWidget *p) : QTextBrowser(p) {
@@ -182,44 +190,146 @@ void ChatbarTextEdit::insertFromMimeData(const QMimeData *source) {
 	}
 }
 
-bool ChatbarTextEdit::sendImagesFromMimeData(const QMimeData *source) {
-	if ((source->hasImage() || source->hasUrls())) {
-		if (Global::get().bAllowHTML) {
-			if (source->hasImage()) {
-				// Process the image pasted onto the chatbar.
-				QImage image = qvariant_cast< QImage >(source->imageData());
-				if (emitPastedImage(image)) {
-					return true;
-				} else {
-					Global::get().l->log(Log::Information, tr("Unable to send image: too large."));
-					return false;
-				}
+namespace {
+// dsh patch：自建图床（mumble-share）配置。拖文件进来要靠它上传，聊天本身只能发文本。
+struct DshShareConfig {
+	QString url;
+	QString token;
 
-			} else if (source->hasUrls()) {
-				// Process the files dropped onto the chatbar. URLs here should be understood as the URIs of files.
-				QList< QUrl > urlList = source->urls();
+	bool valid() const {
+		return !url.isEmpty() && !token.isEmpty();
+	}
+};
 
-				int count = 0;
-				for (int i = 0; i < urlList.size(); ++i) {
-					QString path = urlList[i].toLocalFile();
-					QImage image(path);
+QString dshShareConfigPath() {
+	return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QLatin1String("/mumble-share.json");
+}
 
-					if (image.isNull())
-						continue;
-					if (emitPastedImage(image)) {
-						++count;
-					} else {
-						Global::get().l->log(Log::Information, tr("Unable to send image %1: too large.").arg(path));
-					}
-				}
+DshShareConfig dshShareConfig() {
+	DshShareConfig cfg;
+	cfg.url   = QString::fromLocal8Bit(qgetenv("MUMBLE_SHARE_URL"));
+	cfg.token = QString::fromLocal8Bit(qgetenv("MUMBLE_SHARE_TOKEN"));
 
-				return (count > 0);
+	if (cfg.url.isEmpty() || cfg.token.isEmpty()) {
+		QFile f(dshShareConfigPath());
+		if (f.open(QIODevice::ReadOnly)) {
+			const QJsonObject obj = QJsonDocument::fromJson(f.readAll()).object();
+			if (cfg.url.isEmpty()) {
+				cfg.url = obj.value(QLatin1String("url")).toString();
 			}
-		} else {
-			Global::get().l->log(Log::Information, tr("This server does not allow sending images."));
+			if (cfg.token.isEmpty()) {
+				cfg.token = obj.value(QLatin1String("token")).toString();
+			}
 		}
 	}
-	return false;
+	if (cfg.url.isEmpty()) {
+		cfg.url = QString::fromLatin1("https://ksanan.top/upload");
+	}
+	return cfg;
+}
+} // namespace
+
+// dsh patch：把拖进来（或粘贴进来）的文件上传到自建图床，拿到 Markdown/链接后直接作为消息发出。
+// 上传是异步的：这里返回 true 表示「已接管这次拖放」，避免 Qt 再把本地路径当文本插进聊天栏。
+bool ChatbarTextEdit::dshSendDroppedFile(const QString &path) {
+	const DshShareConfig cfg = dshShareConfig();
+	if (!cfg.valid()) {
+		Global::get().l->log(Log::Warning,
+							 tr("No upload service configured - create \"%1\" with {\"url\": ..., \"token\": ...} "
+								"to send files by dropping them here.")
+								 .arg(dshShareConfigPath()));
+		return false;
+	}
+	if (!Global::get().nam) {
+		return false;
+	}
+
+	QFile *file = new QFile(path);
+	if (!file->open(QIODevice::ReadOnly)) {
+		Global::get().l->log(Log::Warning, tr("Could not read file: %1").arg(path));
+		delete file;
+		return false;
+	}
+
+	const QString fileName = QFileInfo(path).fileName();
+	QNetworkRequest request{ QUrl(cfg.url) };
+	request.setHeader(QNetworkRequest::ContentTypeHeader, QString::fromLatin1("application/octet-stream"));
+	request.setRawHeader("X-Token", cfg.token.toUtf8());
+	request.setRawHeader("X-Filename", QUrl::toPercentEncoding(fileName));
+	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+
+	QNetworkReply *reply = Global::get().nam->post(request, file);
+	file->setParent(reply);
+
+	Global::get().l->log(Log::Information,
+						 tr("Uploading %1 (%2 KB) ...").arg(fileName).arg(QFileInfo(path).size() / 1024));
+
+	connect(reply, &QNetworkReply::finished, this, [this, reply, fileName]() {
+		reply->deleteLater();
+		const QByteArray body = reply->readAll();
+		if (reply->error() != QNetworkReply::NoError) {
+			Global::get().l->log(Log::Warning, tr("Upload failed: %1 - %2").arg(fileName, reply->errorString()));
+			return;
+		}
+		const QJsonObject obj = QJsonDocument::fromJson(body).object();
+		QString text          = obj.value(QLatin1String("markdown")).toString();
+		if (text.isEmpty()) {
+			text = obj.value(QLatin1String("url")).toString();
+		}
+		if (text.isEmpty()) {
+			Global::get().l->log(Log::Warning,
+								 tr("Upload returned nothing usable: %1").arg(QString::fromUtf8(body.left(200))));
+			return;
+		}
+		Global::get().l->log(Log::Information, tr("Uploaded %1 - sending link").arg(fileName));
+		emit pastedImage(text);
+	});
+	return true;
+}
+
+bool ChatbarTextEdit::sendImagesFromMimeData(const QMimeData *source) {
+	// dsh patch：除了图片内嵌，还把「非图片文件」和「内嵌失败的图片」交给图床上传（见 dshSendDroppedFile）
+	if (source->hasImage() && Global::get().bAllowHTML) {
+		// Process the image pasted onto the chatbar.
+		QImage image = qvariant_cast< QImage >(source->imageData());
+		if (emitPastedImage(image)) {
+			return true;
+		}
+		Global::get().l->log(Log::Information, tr("Unable to send image: too large."));
+		return false;
+	}
+
+	if (!source->hasUrls()) {
+		return false;
+	}
+
+	// Process the files dropped onto the chatbar. URLs here should be understood as the URIs of files.
+	const QList< QUrl > urlList = source->urls();
+	int count                   = 0;
+	for (const QUrl &url : urlList) {
+		const QString path = url.toLocalFile();
+		if (path.isEmpty() || !QFileInfo(path).isFile()) {
+			continue;
+		}
+
+		if (Global::get().bAllowHTML) {
+			QImage image(path);
+			if (!image.isNull() && emitPastedImage(image)) {
+				++count;
+				continue;
+			}
+		}
+
+		// dsh patch：非图片，或图片太大发不出去 → 走自建图床，上传完成后自动把链接发出去
+		if (dshSendDroppedFile(path)) {
+			++count;
+		}
+	}
+
+	if (count == 0 && !Global::get().bAllowHTML) {
+		Global::get().l->log(Log::Information, tr("This server does not allow sending images."));
+	}
+	return count > 0;
 }
 
 bool ChatbarTextEdit::emitPastedImage(QImage image) {

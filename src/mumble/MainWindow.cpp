@@ -11,6 +11,7 @@
 #include "AudioInput.h"
 #include "AudioStats.h"
 #include "AudioWizard.h"
+#include "AvatarCropDialog.h"
 #include "BanEditor.h"
 #include "Cert.h"
 #include "Channel.h"
@@ -74,6 +75,7 @@
 #include <QtGui/QClipboard>
 #include <QtGui/QDesktopServices>
 #include <QtGui/QImageReader>
+#include <QtGui/QImageWriter>
 #include <QtGui/QScreen>
 #include <QtGui/QWindow>
 #include <QtWidgets/QFileDialog>
@@ -1088,7 +1090,7 @@ void MainWindow::saveImageAs() {
 		QString::fromLatin1("Mumble-%1.jpg").arg(now.toString(QString::fromLatin1("yyyy-MM-dd-HHmmss")));
 
 	QString fname = QFileDialog::getSaveFileName(this, tr("Save Image File"), getImagePath(defaultFname),
-												 tr("Images (*.png *.jpg *.jpeg)"));
+												 tr("Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;All files (*)"));
 	if (fname.isNull()) {
 		return;
 	}
@@ -3985,7 +3987,7 @@ QPair< QByteArray, QImage > MainWindow::openImageFile() {
 	QPair< QByteArray, QImage > retval;
 
 	QString fname =
-		QFileDialog::getOpenFileName(this, tr("Choose image file"), getImagePath(), tr("Images (*.png *.jpg *.jpeg)"));
+		QFileDialog::getOpenFileName(this, tr("Choose image file"), getImagePath(), tr("Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;All files (*)"));
 
 	if (fname.isNull())
 		return retval;
@@ -4209,15 +4211,77 @@ void MainWindow::openSelfCommentDialog() {
 	delete texm;
 }
 
+// dsh patch：把裁剪后的头像压到服务端允许的大小，返回可直接发送的字节（失败返回空 QByteArray）
+// 原实现的问题：>1024 的图在客户端被静默丢弃；编码后 >image_message_length(默认 1MB) 会被服务端
+// PERM_DENIED(TextTooLong) 拒收，用户全程看不到原因。这里逐级降尺寸 + 降质量，保证发得出去。
+static QByteArray dshEncodeAvatar(const QImage &image, int byteLimit, QSize &outSize, QByteArray &outFormat) {
+	static const int dshSides[] = { 512, 384, 288, 224, 160, 128 };
+	for (const int dshSide : dshSides) {
+		QImage dshScaled = image;
+		if ((dshScaled.width() != dshSide) || (dshScaled.height() != dshSide)) {
+			dshScaled = dshScaled.scaled(dshSide, dshSide, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+		}
+
+		QByteArray dshPng;
+		{
+			QBuffer dshBuffer(&dshPng);
+			dshBuffer.open(QIODevice::WriteOnly);
+			if (dshScaled.save(&dshBuffer, "PNG") && ((byteLimit <= 0) || (dshPng.size() <= byteLimit))) {
+				outSize   = dshScaled.size();
+				outFormat = QByteArray("PNG");
+				return dshPng;
+			}
+		}
+
+		for (int dshQuality = 92; dshQuality >= 40; dshQuality -= 13) {
+			QByteArray dshJpg;
+			QBuffer dshBuffer(&dshJpg);
+			dshBuffer.open(QIODevice::WriteOnly);
+			QImageWriter dshWriter(&dshBuffer, "JPEG");
+			dshWriter.setQuality(dshQuality);
+			if (dshWriter.write(dshScaled) && ((byteLimit <= 0) || (dshJpg.size() <= byteLimit))) {
+				outSize   = dshScaled.size();
+				outFormat = QByteArray("JPEG");
+				return dshJpg;
+			}
+		}
+	}
+	return QByteArray();
+}
+
 void MainWindow::changeServerTexture() {
 	QPair< QByteArray, QImage > choice = openImageFile();
 	if (choice.first.isEmpty())
 		return;
 
-	const QImage &img = choice.second;
+	// dsh patch：先让用户裁剪/缩放（原来直接把原始文件字节发出去，既不能调整构图，
+	// 又会被上面的隐性尺寸/体积限制静默丢掉）
+	AvatarCropDialog dshCropDialog(choice.second, this);
+	if (dshCropDialog.exec() != QDialog::Accepted) {
+		return;
+	}
 
-	if ((img.height() <= 1024) && (img.width() <= 1024))
-		Global::get().sh->setUserTexture(Global::get().uiSession, choice.first);
+	// 服务端在连接时告知 image_message_length，客户端记在 uiImageLength；拿不到就按 1MB 估算
+	const int dshLimit =
+		Global::get().uiImageLength > 0 ? static_cast< int >(Global::get().uiImageLength) : 1048576;
+
+	QSize dshSize;
+	QByteArray dshFormat;
+	const QByteArray dshPayload = dshEncodeAvatar(dshCropDialog.croppedImage(512), dshLimit, dshSize, dshFormat);
+	if (dshPayload.isEmpty()) {
+		Global::get().l->log(Log::Warning,
+							 tr("Could not encode an avatar small enough for this server (limit %1 KB).")
+								 .arg(dshLimit / 1024));
+		return;
+	}
+
+	Global::get().sh->setUserTexture(Global::get().uiSession, dshPayload);
+	Global::get().l->log(Log::Information, tr("Avatar sent: %1x%2 %3, %4 KB (server limit %5 KB)")
+											  .arg(dshSize.width())
+											  .arg(dshSize.height())
+											  .arg(QString::fromLatin1(dshFormat))
+											  .arg(dshPayload.size() / 1024)
+											  .arg(dshLimit / 1024));
 }
 
 void MainWindow::removeServerTexture() {

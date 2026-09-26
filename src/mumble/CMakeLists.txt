@@ -120,6 +120,8 @@ set(MUMBLE_SOURCES
 	"AudioWizard.cpp"
 	"AudioWizard.h"
 	"AudioWizard.ui"
+	"AvatarCropDialog.cpp"
+	"AvatarCropDialog.h"
 	"BanEditor.cpp"
 	"BanEditor.h"
 	"BanEditor.ui"
