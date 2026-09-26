@@ -880,7 +880,7 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 				// 头像首字 + 稳定配色
 				const QString dshPlainName = QTextDocumentFragment::fromHtml(dshSender).toPlainText().trimmed();
 				const QString dshInitial   = dshPlainName.isEmpty() ? QString::fromLatin1("?") : dshPlainName.left(1).toUpper();
-				const unsigned int dshHash = qHash(dshPlainName);
+				const size_t dshHash = static_cast< size_t >(qHash(dshPlainName));
 				static const char *dshAvatarColors[] = { "#4a90d9", "#d08770", "#a3be8c", "#b48ead",
 													 "#ebcb8b", "#5e81ac", "#bf616a", "#88c0d0" };
 				const QString dshAvatarColor =
