@@ -27,6 +27,8 @@ AvatarCropDialog::AvatarCropDialog(const QImage &source, QWidget *parent) : QDia
 
 	m_hint = new QLabel(this);
 	m_hint->setAlignment(Qt::AlignCenter);
+	// 提示文字信息量比以前大（区间 + 原图口径），允许换行，避免被对话框宽度截断
+	m_hint->setWordWrap(true);
 	layout->addWidget(m_hint);
 
 	m_zoomSlider = new QSlider(Qt::Horizontal, this);
@@ -115,13 +117,19 @@ void AvatarCropDialog::updateHint() {
 	if (!m_hint) {
 		return;
 	}
-	const qreal zoom = effectiveZoom();
-	const int minPct = m_zoomSlider ? m_zoomSlider->minimum() : 100;
-	m_hint->setText(tr("Output 512x512  ·  source %1x%2  ·  zoom %3% (range %4% - 400%; 100% fills the square)")
+	// 注意：这里显示的是「滑条口径」的百分比（100% = 铺满裁剪框），和滑条读数、
+	// 以及 range 区间保持同一套刻度。旧版显示的是「相对原图像素」的缩放，
+	// 大图时会出现 40% < 下限 55% 这种自相矛盾的数字。原图口径放在末尾单独给出。
+	const int pct     = m_zoomSlider ? m_zoomSlider->value() : 100;
+	const int minPct  = m_zoomSlider ? m_zoomSlider->minimum() : 100;
+	const int srcPct  = qRound(effectiveZoom() * 100);
+	m_hint->setText(tr("Output 512x512  ·  source %1x%2  ·  zoom %3% (range %4%-400%; 100% fills the square)  ·  "
+					   "%5% of source pixels")
 						.arg(m_source.width())
 						.arg(m_source.height())
-						.arg(qRound(zoom * 100))
-						.arg(minPct));
+						.arg(pct)
+						.arg(minPct)
+						.arg(srcPct));
 	m_hint->setToolTip(tr("Drag inside the square to move the image; use the slider or the mouse wheel to zoom.\n"
 						  "100% fills the square; slide left all the way to fit the whole image in.\n"
 						  "The square is what will be sent as your avatar."));
