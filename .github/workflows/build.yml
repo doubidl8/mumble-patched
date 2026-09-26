@@ -50,6 +50,14 @@ jobs:
             type: [shared]
             arch: [x86_64, arm64]
             compiler: [gcc]
+            # dsh: 只构建 amd64 Windows（用户要求 2026-09-26）。
+            # Linux/macOS/arm64 仅用于提前发现编译错误，但全平台一轮 25-30 分钟，
+            # 而 Windows 静态 Qt 构建本身就占大头 —— 故排除其余平台。
+            # 需要临时排查某平台时，把对应 exclude 条目注释掉再推。
+            exclude:
+            - os: ubuntu-24.04
+            - os: ubuntu-26.04
+            - os: macos-15
             include:
             - os: ubuntu-26.04
               type: shared
