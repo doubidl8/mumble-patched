@@ -1062,9 +1062,32 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 				for (const QString &dshLine : dshPlainBody.split(QLatin1Char(10))) {
 					dshTextW = qMax(dshTextW, QFontMetrics(tlog->font()).horizontalAdvance(dshLine));
 				}
-				// dsh patch：图片消息的气泡必须够宽。正文里含 <img> 时，纯文本宽度是 0，
-				// 旧代码会把气泡压到 90px，图片随即被单元格裁成一小块。
+				// dsh patch：图片消息的气泡宽度必须按**图片实际尺寸**来。
+				// 图片消息的正文里只有 <img>，纯文本宽度是 0 -> 24+18=42 -> 被 qBound 的下限 90 抬回去，
+				// 图片于是被塞进 90px 的单元格（Qt 对超宽图片是裁剪）—— 用户实测两次都是小方块。
 				const bool dshBodyHasImage = dshBody.contains(QLatin1String("<img"), Qt::CaseInsensitive);
+				int dshImgDisplayW         = 0;
+				if (dshBodyHasImage) {
+					// 可用内宽 = 视图宽 - 两侧头像列(34+34) - 气泡内边距(6+6)
+					const int dshAvailInner = qMax(90, dshViewW - 68 - 12);
+					// 消息里的 base64 是 QUrl::toPercentEncoding 处理过的、每 72 字符带换行，先还原再解码
+					static const QRegularExpression dshImgDataRe(
+						QString::fromLatin1("<img[^>]*src=\"data:image/[a-zA-Z]+;base64,([^\"]+)\""));
+					const QRegularExpressionMatch dshImgDataMatch = dshImgDataRe.match(dshBody);
+					if (dshImgDataMatch.hasMatch()) {
+						QByteArray dshB64 = dshImgDataMatch.captured(1).toLatin1();
+						dshB64.replace("\n", "").replace("\r", "");
+						const QImage dshImg = QImage::fromData(QByteArray::fromBase64(QUrl::fromPercentEncoding(dshB64)));
+						if (!dshImg.isNull()) {
+							dshImgDisplayW = qMin(dshImg.width(), dshAvailInner);
+						}
+					}
+					if (dshImgDisplayW <= 0) {
+						dshImgDisplayW = dshAvailInner; // 尺寸解不出来就按可用宽度铺满
+					}
+					// 用图片宽度当「正文宽度」，后面的气泡宽度公式才会给出够宽的气泡
+					dshTextW = qMax(dshTextW, dshImgDisplayW);
+				}
 				const int dshMaxWEff = dshBodyHasImage ? qMax(dshMaxW, dshViewW - 68) : dshMaxW;
 				const int dshBubbleW = qBound(90, dshTextW + 18, dshMaxWEff);
 				// 气泡内首行显示发送者名字（聊天软件标配），正文另起一行
