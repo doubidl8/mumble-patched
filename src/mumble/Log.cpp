@@ -641,6 +641,54 @@ QString Log::imageToImg(QImage img, int maxSize) {
 	return QString();
 }
 
+namespace {
+// dsh patch：把 [from, to) 范围内的图片按 targetWidth 等比缩小（只改显示尺寸，不动原始资源）。
+// 单独抽出来是因为「气泡」路径也要用：气泡是表格单元格，Qt 对超出单元格的图片是裁剪而非缩放，
+// 不先缩好就会显示成一个小方块（用户实测：「粘进聊天框的图片变成小方块，只露出左上角」）。
+void dshScaleImagesInRange(QTextDocument *doc, int from, int to, int targetWidth) {
+	if (!doc || (targetWidth <= 0) || (to <= from)) {
+		return;
+	}
+	for (QTextBlock qtb = doc->findBlock(from); qtb.isValid() && (qtb.position() < to); qtb = qtb.next()) {
+		for (QTextBlock::iterator qtbi = qtb.begin(); !qtbi.atEnd(); ++qtbi) {
+			const QTextFragment qtf = qtbi.fragment();
+			if (!qtf.isValid()) {
+				continue;
+			}
+			const int fragPos = qtf.position();
+			if ((fragPos < from) || (fragPos >= to)) {
+				continue;
+			}
+			QTextCharFormat qcf = qtf.charFormat();
+			if (!qcf.isImageFormat()) {
+				continue;
+			}
+			QTextImageFormat qif = qcf.toImageFormat();
+			int w                = static_cast< int >(qif.width());
+			int h                = static_cast< int >(qif.height());
+			if ((w <= 0) || (h <= 0)) {
+				const QVariant res = doc->resource(QTextDocument::ImageResource, QUrl(qif.name()));
+				if (res.canConvert< QImage >()) {
+					const QImage img = res.value< QImage >();
+					w                = img.width();
+					h                = img.height();
+				}
+			}
+			if ((w <= 0) || (h <= 0) || (w <= targetWidth)) {
+				continue;
+			}
+			qif.setWidth(targetWidth);
+			qif.setHeight(qMax(1, static_cast< int >(h * (static_cast< double >(targetWidth) / w))));
+			QTextCursor qtc(doc);
+			qtc.setPosition(fragPos, QTextCursor::MoveAnchor);
+			qtc.setPosition(fragPos + qtf.length(), QTextCursor::KeepAnchor);
+			qtc.setCharFormat(qif);
+			qtbi = qtb.begin(); // 尺寸改动会让迭代器失效，重新从头遍历本块
+		}
+	}
+}
+} // namespace
+
 QString Log::validHtml(const QString &html, QTextCursor *tc) {
 	LogDocument qtd;
 
@@ -1014,7 +1062,11 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 				for (const QString &dshLine : dshPlainBody.split(QLatin1Char(10))) {
 					dshTextW = qMax(dshTextW, QFontMetrics(tlog->font()).horizontalAdvance(dshLine));
 				}
-				const int dshBubbleW = qBound(90, dshTextW + 18, dshMaxW);
+				// dsh patch：图片消息的气泡必须够宽。正文里含 <img> 时，纯文本宽度是 0，
+				// 旧代码会把气泡压到 90px，图片随即被单元格裁成一小块。
+				const bool dshBodyHasImage = dshBody.contains(QLatin1String("<img"), Qt::CaseInsensitive);
+				const int dshMaxWEff = dshBodyHasImage ? qMax(dshMaxW, dshViewW - 68) : dshMaxW;
+				const int dshBubbleW = qBound(90, dshTextW + 18, dshMaxWEff);
 				// 气泡内首行显示发送者名字（聊天软件标配），正文另起一行
 				const QString dshBubbleContent = QString::fromLatin1(
 					"<div style='margin-bottom:3px;'><font color='%1' size='1'><b>%2</b></font></div>%3")
@@ -1037,7 +1089,12 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 											 .arg(ownMessage ? QString::fromLatin1("right") : QString::fromLatin1("left"))
 											 .arg(dshRow);
 
+				const int dshInsertFrom = tc.position();
 				tc.insertHtml(dshTable);
+				if (dshBodyHasImage) {
+					// 气泡内可用宽度 = 气泡宽 - 左右内边距(6+6)
+					dshScaleImagesInRange(tlog->document(), dshInsertFrom, tc.position(), qMax(60, dshBubbleW - 12));
+				}
 				tc.movePosition(QTextCursor::End);
 				tc.setBlockFormat(bf);
 			} else {
