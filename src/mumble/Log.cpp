@@ -1076,8 +1076,8 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 					const QRegularExpressionMatch dshImgDataMatch = dshImgDataRe.match(dshBody);
 					if (dshImgDataMatch.hasMatch()) {
 						QByteArray dshB64 = dshImgDataMatch.captured(1).toLatin1();
-						dshB64.remove('\n');
-						dshB64.remove('\r');
+						dshB64.replace("\n", "");
+						dshB64.replace("\r", "");
 						// QUrl::fromPercentEncoding 返回 QString，fromBase64 只接 QByteArray，必须显式 toLatin1()
 						const QByteArray dshRaw = QByteArray::fromBase64(QUrl::fromPercentEncoding(dshB64).toLatin1());
 						const QImage dshImg     = QImage::fromData(dshRaw);
