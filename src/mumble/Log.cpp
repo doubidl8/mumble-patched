@@ -1067,6 +1067,8 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 				// 图片于是被塞进 90px 的单元格（Qt 对超宽图片是裁剪）—— 用户实测两次都是小方块。
 				const bool dshBodyHasImage = dshBody.contains(QLatin1String("<img"), Qt::CaseInsensitive);
 				int dshImgDisplayW         = 0;
+				int dshImgNatW             = 0;
+				int dshImgNatH             = 0;
 				if (dshBodyHasImage) {
 					// 可用内宽 = 视图宽 - 两侧头像列(34+34) - 气泡内边距(6+6)
 					const int dshAvailInner = qMax(90, dshViewW - 68 - 12);
@@ -1082,7 +1084,9 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 						const QByteArray dshRaw = QByteArray::fromBase64(QUrl::fromPercentEncoding(dshB64).toLatin1());
 						const QImage dshImg     = QImage::fromData(dshRaw);
 						if (!dshImg.isNull()) {
-							dshImgDisplayW = qMin(dshImg.width(), dshAvailInner);
+							dshImgNatW     = qMax(1, dshImg.width());
+							dshImgNatH     = qMax(1, dshImg.height());
+							dshImgDisplayW = qMin(dshImgNatW, dshAvailInner);
 						}
 					}
 					if (dshImgDisplayW <= 0) {
@@ -1093,13 +1097,29 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 				}
 				const int dshMaxWEff = dshBodyHasImage ? qMax(dshMaxW, dshViewW - 68) : dshMaxW;
 				const int dshBubbleW = qBound(90, dshTextW + 18, dshMaxWEff);
+				// dsh patch：图片必须带上显式显示尺寸。Qt 对表格单元格里超宽的图片是「裁剪」而不是缩放，
+				// 而插入后再缩放依赖文档资源（聊天文档里取不到原始尺寸）→ 实测不生效、图只剩左上角一块。
+				// 这里既然已经从 data URI 解出了真实尺寸，就直接把 width/height 写进 img 标签，确定可控。
+				QString dshBodyFitted = dshBody;
+				if (dshBodyHasImage && (dshImgNatW > 0) && (dshImgNatH > 0)) {
+					const int dshFitW = qMax(40, dshImgDisplayW);
+					const int dshFitH = qMax(1, static_cast< int >(dshImgNatH * (static_cast< double >(dshFitW) / dshImgNatW)));
+					const QString dshAttrs = QString::fromLatin1(" width='%1' height='%2'").arg(dshFitW).arg(dshFitH);
+					// 手工扫描 <img 并在其后插入尺寸属性：不用正则替换的反向引用，行为确定
+					int dshPos = dshBodyFitted.indexOf(QLatin1String("<img"), 0, Qt::CaseInsensitive);
+					while (dshPos >= 0) {
+						dshBodyFitted.insert(dshPos + 4, dshAttrs);
+						dshPos = dshBodyFitted.indexOf(QLatin1String("<img"), dshPos + 4 + dshAttrs.length(), Qt::CaseInsensitive);
+					}
+				}
+
 				// 气泡内首行显示发送者名字（聊天软件标配），正文另起一行
 				const QString dshBubbleContent = QString::fromLatin1(
 					"<div style='margin-bottom:3px;'><font color='%1' size='1'><b>%2</b></font></div>%3")
 													  .arg(ownMessage ? QString::fromLatin1("#dbe9ff")
 																	  : QString::fromLatin1("#9fd0ff"))
 													  .arg(dshPlainName.toHtmlEscaped())
-													  .arg(dshBody);
+													  .arg(dshBodyFitted);
 				const QString dshBubbleCell =
 					QString::fromLatin1("<td width='%1' bgcolor='%2'><div style='margin:6px;'><font color='%3'>%4</font></div></td>")
 						.arg(QString::number(dshBubbleW))
