@@ -1136,7 +1136,10 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 											 .arg(dshRow);
 
 				const int dshInsertFrom = tc.position();
-				tc.insertHtml(dshTable);
+				// 走上游的 validHtml 管道：它用内部的 LogDocument 解析 HTML（data URI 图片就是在
+				// 那里被解析/校验的），再 insertFragment 到日志文档。裸 insertHtml 会绕过这套处理，
+				// 结果是图片加载失败显示成占位符（用户实测：粘贴的图变成「蓝底白纸」图标）。
+				validHtml(dshTable, &tc);
 				if (dshBodyHasImage) {
 					// 气泡内可用宽度 = 气泡宽 - 左右内边距(6+6)
 					dshScaleImagesInRange(tlog->document(), dshInsertFrom, tc.position(), qMax(60, dshBubbleW - 12));
