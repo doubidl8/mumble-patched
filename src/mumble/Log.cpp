@@ -1069,6 +1069,7 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 				int dshImgDisplayW         = 0;
 				int dshImgNatW             = 0;
 				int dshImgNatH             = 0;
+				QString dshImgDiag; // dsh 诊断：图片没显示出来时的原因，最后会写进聊天
 				if (dshBodyHasImage) {
 					// 可用内宽 = 视图宽 - 两侧头像列(34+34) - 气泡内边距(6+6)
 					const int dshAvailInner = qMax(90, dshViewW - 68 - 12);
@@ -1090,6 +1091,12 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 						}
 					}
 					if (dshImgDisplayW <= 0) {
+						// dsh 诊断：尺寸解不出来时把原因记下来
+						if (!dshImgDataMatch.hasMatch()) {
+							dshImgDiag = QString::fromLatin1("正则没匹配到 data URI（正文长度 %1）").arg(dshBody.length());
+						} else {
+							dshImgDiag = QString::fromLatin1("base64 解不出位图（URI 长度 %1）").arg(dshImgDataMatch.captured(1).length());
+						}
 						dshImgDisplayW = dshAvailInner; // 尺寸解不出来就按可用宽度铺满
 					}
 					// 用图片宽度当「正文宽度」，后面的气泡宽度公式才会给出够宽的气泡
@@ -1143,8 +1150,42 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 				if (dshBodyHasImage) {
 					// 气泡内可用宽度 = 气泡宽 - 左右内边距(6+6)
 					dshScaleImagesInRange(tlog->document(), dshInsertFrom, tc.position(), qMax(60, dshBubbleW - 12));
+					// dsh 诊断（2026-09-29）：图片显示异常时，把运行期真实状态写进聊天，用户截图即可反馈。
+					{
+						int dshImgSeen = 0;
+						QString dshImgState;
+						for (QTextBlock dqb = tlog->document()->findBlock(dshInsertFrom); dqb.isValid() && (dqb.position() < tc.position()); dqb = dqb.next()) {
+							for (QTextBlock::iterator dqi = dqb.begin(); !dqi.atEnd(); ++dqi) {
+								const QTextFragment dqf = dqi.fragment();
+								if (!dqf.isValid() || !dqf.charFormat().isImageFormat()) {
+									continue;
+								}
+								const QTextImageFormat dqif = dqf.charFormat().toImageFormat();
+								const QUrl dqurl(dqif.name());
+								const QVariant dqres = tlog->document()->resource(QTextDocument::ImageResource, dqurl);
+								const bool dqok     = dqres.canConvert< QImage >() && !dqres.value< QImage >().isNull();
+								++dshImgSeen;
+								dshImgState += QString::fromLatin1("[图%1 scheme=%2 名长=%3 加载=%4]")
+												   .arg(dshImgSeen)
+												   .arg(dqurl.scheme())
+												   .arg(dqif.name().length())
+												   .arg(dqok ? QString::fromLatin1("成功") : QString::fromLatin1("失败"));
+							}
+						}
+						if ((dshImgSeen == 0) || dshImgState.contains(QLatin1String("失败")) || !dshImgDiag.isEmpty()) {
+							if (dshImgSeen == 0) {
+								dshImgState = QString::fromLatin1("[没有找到图片片段]");
+							}
+							tc.movePosition(QTextCursor::End);
+							QTextBlockFormat dqbf = bf;
+							dqbf.setAlignment(Qt::AlignLeft);
+							tc.insertBlock(dqbf);
+							QTextCharFormat dqcf;
+							dqcf.setForeground(QBrush(QColor(255, 120, 120)));
+							tc.insertText(QString::fromLatin1("[dsh诊断] 图片未正常显示：%1 %2").arg(dshImgState, dshImgDiag), dqcf);
+						}
+					}
 				}
-				tc.movePosition(QTextCursor::End);
 				tc.setBlockFormat(bf);
 			} else {
 				validHtml(console, &tc);
