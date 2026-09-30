@@ -28,6 +28,8 @@
 #include <type_traits>
 
 #include <QSignalBlocker>
+#include <QFile>
+#include <QTextStream>
 #include <QtCore/QMutexLocker>
 #include <QtCore/QRegularExpression>
 #include <QtGui/QImageWriter>
@@ -1177,12 +1179,32 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 								dshImgState = QString::fromLatin1("[没有找到图片片段]");
 							}
 							tc.movePosition(QTextCursor::End);
-							QTextBlockFormat dqbf = bf;
+							// 注意：不能用 bf —— 它是日志的块格式，第 943 行把行高设成了 0（FixedHeight），
+							// 照抄会让诊断文字竖向重叠成一团（用户实测：红字糊在一起、OCR 都读不出）。
+							QTextBlockFormat dqbf;
 							dqbf.setAlignment(Qt::AlignLeft);
+							dqbf.setTopMargin(2);
+							dqbf.setLineHeight(120, QTextBlockFormat::ProportionalHeight);
 							tc.insertBlock(dqbf);
 							QTextCharFormat dqcf;
 							dqcf.setForeground(QBrush(QColor(255, 120, 120)));
 							tc.insertText(QString::fromLatin1("[dsh诊断] 图片未正常显示：%1 %2").arg(dshImgState, dshImgDiag), dqcf);
+							// dsh 诊断落盘（2026-09-30）：截图看不清、OCR 也读不动，改成写文件，agent 直接读
+							QFile dshDiagFile(QString::fromLatin1("D:/.dsh/mumble-build/dsh-image-diag.log"));
+							if (dshDiagFile.open(QIODevice::Append | QIODevice::Text)) {
+								QTextStream dshTs(&dshDiagFile);
+								dshTs << QDateTime::currentDateTime().toString(Qt::ISODate) << QLatin1String(" |")
+									  << QLatin1String(" bodyLen=") << dshBody.length() << QLatin1String(" plainLen=")
+									  << dshPlainBody.length() << QLatin1String(" hasImg=") << dshBodyHasImage
+									  << QLatin1String(" dataUriLen=")
+									  << (dshImgDataMatch.hasMatch() ? dshImgDataMatch.captured(1).length() : -1)
+									  << QLatin1String(" nat=") << dshImgNatW << QLatin1String("x") << dshImgNatH
+									  << QLatin1String(" state=") << dshImgState << QLatin1String(" diag=[") << dshImgDiag
+									  << QLatin1String(" bodyTail=[") << dshBody.right(120) << QLatin1String("]")
+									  << QLatin1String(" logTail=[")
+									  << tlog->document()->toPlainText().right(120) << QLatin1String("]\n");
+								dshDiagFile.close();
+							}
 						}
 					}
 				}
