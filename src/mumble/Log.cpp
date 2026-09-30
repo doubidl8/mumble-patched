@@ -1197,12 +1197,29 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 							QFile dshDiagFile(QString::fromLatin1("D:/.dsh/mumble-build/dsh-image-diag.log"));
 							if (dshDiagFile.open(QIODevice::Append | QIODevice::Text)) {
 								QTextStream dshTs(&dshDiagFile);
+								// 注意：dshImgDataMatch 在【前一个】 if (dshBodyHasImage) 块里声明，
+								// 这里已经出了作用域（曾因此编译失败），所以在本地重新跑一次正则。
+								static const QRegularExpression dshBodyImgRe(
+									QString::fromLatin1("src=\"data:image/[a-zA-Z]+;base64,([^\"]+)\""));
+								QString dshUriLens;
+								int dshImgCount = 0;
+								{
+									QRegularExpressionMatchIterator dshIt = dshBodyImgRe.globalMatch(dshBody);
+									while (dshIt.hasNext() && (dshImgCount < 5)) {
+										const QRegularExpressionMatch dshM = dshIt.next();
+										dshUriLens += QString::number(dshM.captured(1).length()) + QLatin1String(",");
+										++dshImgCount;
+									}
+								}
+								const int dshUriLen = dshImgCount > 0 ? dshBodyImgRe.match(dshBody).captured(1).length() : -1;
 								dshTs << QDateTime::currentDateTime().toString(Qt::ISODate) << QLatin1String(" |")
 									  << QLatin1String(" bodyLen=") << dshBody.length() << QLatin1String(" plainLen=")
 									  << dshPlainBody.length() << QLatin1String(" hasImg=") << dshBodyHasImage
 									  << QLatin1String(" dataUriLen=")
-									  << (dshImgDataMatch.hasMatch() ? dshImgDataMatch.captured(1).length() : -1)
+									  << dshUriLen
 									  << QLatin1String(" nat=") << dshImgNatW << QLatin1String("x") << dshImgNatH
+									  << QLatin1String(" bodyImgCount=") << dshImgCount
+									  << QLatin1String(" bodyUris=[") << dshUriLens << QLatin1String("]")
 									  << QLatin1String(" state=") << dshImgState << QLatin1String(" diag=[") << dshImgDiag
 									  << QLatin1String(" bodyTail=[") << dshBody.right(120) << QLatin1String("]")
 									  << QLatin1String(" logTail=[")
