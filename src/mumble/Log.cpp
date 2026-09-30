@@ -1122,27 +1122,26 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 					}
 				}
 
-				// 气泡内首行显示发送者名字（聊天软件标配），正文另起一行
-				const QString dshBubbleContent = QString::fromLatin1(
-					"<div style='margin-bottom:3px;'><font color='%1' size='1'><b>%2</b></font></div>%3")
-													  .arg(ownMessage ? QString::fromLatin1("#dbe9ff")
-																	  : QString::fromLatin1("#9fd0ff"))
-													  .arg(dshPlainName.toHtmlEscaped())
-													  .arg(dshBodyFitted);
-				const QString dshBubbleCell =
-					QString::fromLatin1("<td width='%1' bgcolor='%2'><div style='margin:6px;'><font color='%3'>%4</font></div></td>")
-						.arg(QString::number(dshBubbleW))
-						.arg(dshBubbleBg)
-						.arg(dshBubbleFg)
-						.arg(dshBubbleContent);
-				const QString dshRow =
-					ownMessage
-						? QString::fromLatin1("<tr>%1%2%3</tr>").arg(dshEmptyCell).arg(dshBubbleCell).arg(dshAvatarHtml)
-						: QString::fromLatin1("<tr>%1%2%3</tr>").arg(dshAvatarHtml).arg(dshBubbleCell).arg(dshEmptyCell);
-				// 表格本身按内容收缩，再靠 align 决定整块贴左还是贴右 —— 这才是气泡的左右对齐。
-				const QString dshTable = QString::fromLatin1("<table cellpadding='0' cellspacing='0' align='%1'>%2</table>")
-											 .arg(ownMessage ? QString::fromLatin1("right") : QString::fromLatin1("left"))
-											 .arg(dshRow);
+				// dsh patch（2026-09-30 关键修复）：这里必须用【字符串拼接】，绝不能用 QString::arg() 链式替换。
+				// arg() 的后续调用会重扫描「已经插入的内容」，而消息载荷是 percent-encoded 的 base64，
+				// 里面充满 %3D / %2F 这类序列 —— 它们会被当成占位符 %3 / %2 被其他参数顶掉。
+				// 实测后果：图片 src 属性在头像单元格的引号处提前结束，图片名只剩 75 字符、资源加载失败，
+				// 聊天里显示成白纸张占位符（用户反馈了好几天的那个 bug 的真因）。
+				const QString dshBubbleContent = QString::fromLatin1("<div style='margin-bottom:3px;'><font color='")
+					+ (ownMessage ? QString::fromLatin1("#dbe9ff") : QString::fromLatin1("#9fd0ff"))
+					+ QString::fromLatin1("' size='1'><b>") + dshPlainName.toHtmlEscaped()
+					+ QString::fromLatin1("</b></font></div>") + dshBodyFitted;
+				const QString dshBubbleCell = QString::fromLatin1("<td width='") + QString::number(dshBubbleW)
+					+ QString::fromLatin1("' bgcolor='") + dshBubbleBg
+					+ QString::fromLatin1("'><div style='margin:6px;'><font color='") + dshBubbleFg
+					+ QString::fromLatin1("'>") + dshBubbleContent + QString::fromLatin1("</font></div></td>");
+				const QString dshRow = QString::fromLatin1("<tr>")
+					+ (ownMessage ? (dshEmptyCell + dshBubbleCell + dshAvatarHtml)
+								  : (dshAvatarHtml + dshBubbleCell + dshEmptyCell))
+					+ QString::fromLatin1("</tr>");
+				const QString dshTable = QString::fromLatin1("<table cellpadding='0' cellspacing='0' align='")
+					+ (ownMessage ? QString::fromLatin1("right") : QString::fromLatin1("left"))
+					+ QString::fromLatin1("'>") + dshRow + QString::fromLatin1("</table>");
 
 				const int dshInsertFrom = tc.position();
 				// 走上游的 validHtml 管道：它用内部的 LogDocument 解析 HTML（data URI 图片就是在
@@ -1218,7 +1217,9 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 									  << QLatin1String(" dataUriLen=")
 									  << dshUriLen
 									  << QLatin1String(" nat=") << dshImgNatW << QLatin1String("x") << dshImgNatH
-									  << QLatin1String(" bodyImgCount=") << dshImgCount
+									  << QLatin1String(" tableLen=") << dshTable.length()
+									  << QLatin1String(" tableHasPayload=") << dshTable.contains(dshBodyFitted)
+<< QLatin1String(" bodyImgCount=") << dshImgCount
 									  << QLatin1String(" bodyUris=[") << dshUriLens << QLatin1String("]")
 									  << QLatin1String(" state=") << dshImgState << QLatin1String(" diag=[") << dshImgDiag
 									  << QLatin1String(" bodyTail=[") << dshBody.right(120) << QLatin1String("]")
