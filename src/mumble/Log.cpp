@@ -1172,6 +1172,10 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 												   .arg(dqurl.scheme())
 												   .arg(dqif.name().length())
 												   .arg(dqok ? QString::fromLatin1("成功") : QString::fromLatin1("失败"));
+								// 记录图片名的头尾，判定「75 字符」到底是截断还是另一个东西
+								const QString dshNameHead = dqif.name().left(60);
+								const QString dshNameTail = dqif.name().right(16);
+								dshImgState += QString::fromLatin1(" nameHead=[%1] nameTail=[%2]").arg(dshNameHead, dshNameTail);
 							}
 						}
 						if ((dshImgSeen == 0) || dshImgState.contains(QLatin1String("失败")) || !dshImgDiag.isEmpty()) {
