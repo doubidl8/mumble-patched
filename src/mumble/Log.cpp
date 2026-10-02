@@ -1135,10 +1135,18 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 					+ QString::fromLatin1("' bgcolor='") + dshBubbleBg
 					+ QString::fromLatin1("'><div style='margin:6px;'><font color='") + dshBubbleFg
 					+ QString::fromLatin1("'>") + dshBubbleContent + QString::fromLatin1("</font></div></td>");
-				const QString dshRow = QString::fromLatin1("<tr>")
-					+ (ownMessage ? (dshEmptyCell + dshBubbleCell + dshAvatarHtml)
-								  : (dshAvatarHtml + dshBubbleCell + dshEmptyCell))
-					+ QString::fromLatin1("</tr>");
+				// dsh patch（2026-10-02 编译修复）：这里不能把两个字符串拼接表达式放进三元的两个分支。
+				// Qt 的 QStringBuilder 表达式模板会让「同名操作数不同顺序」的两支产生**不同类型**，
+				// clang-cl 报 "incompatible operand types ('QStringBuilder<...>' and 'QStringBuilder<...>')"，
+				// 整个 Build 步骤失败（run 36689593759）。先把每支赋给 QString（赋值会触发到 QString 的
+				// 转换、抹平类型），再拼外层，语义完全一样。
+				QString dshRowCells;
+				if (ownMessage) {
+					dshRowCells = dshEmptyCell + dshBubbleCell + dshAvatarHtml;
+				} else {
+					dshRowCells = dshAvatarHtml + dshBubbleCell + dshEmptyCell;
+				}
+				const QString dshRow = QString::fromLatin1("<tr>") + dshRowCells + QString::fromLatin1("</tr>");
 				const QString dshTable = QString::fromLatin1("<table cellpadding='0' cellspacing='0' align='")
 					+ (ownMessage ? QString::fromLatin1("right") : QString::fromLatin1("left"))
 					+ QString::fromLatin1("'>") + dshRow + QString::fromLatin1("</table>");
