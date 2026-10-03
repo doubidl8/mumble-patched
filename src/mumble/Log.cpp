@@ -1089,7 +1089,11 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 						if (!dshImg.isNull()) {
 							dshImgNatW     = qMax(1, dshImg.width());
 							dshImgNatH     = qMax(1, dshImg.height());
-							dshImgDisplayW = qMin(dshImgNatW, dshAvailInner);
+							// dsh patch（2026-10-03 用户要求）：一律按**可用内宽**显示，
+							// 让图片"正好占满聊天气泡、不溢出"。原来是 qMin(自然宽, 可用内宽)，
+							// 于是窄图（例如 130px 宽的截图裁切）只按原像素显示，用户反馈"太小"。
+							// 气泡宽度上限是 视图宽-68（见 dshMaxWEff），所以铺满也不会撑破窗口。
+							dshImgDisplayW = dshAvailInner;
 						}
 					}
 					if (dshImgDisplayW <= 0) {
